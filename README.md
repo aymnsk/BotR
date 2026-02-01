@@ -1,4 +1,4 @@
-````markdown
+
 # BotR 🚀
 
 **AI-Powered Algorithmic Trading Bot for Low-Spec Devices**
