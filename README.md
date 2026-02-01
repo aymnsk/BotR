@@ -1,9 +1,3 @@
-Here’s a **professional, clear, and complete `README.md`** you can put in your GitHub repo **BotR** (AI for low-spec devices for algorithmic trading). It’s tailored for your project based on common best practices for algo-trading bots and AI systems.
-
-You can copy this directly into your repo as `README.md`.
-
----
-
 ````markdown
 # BotR 🚀
 
