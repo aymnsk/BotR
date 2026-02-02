@@ -1,83 +1,136 @@
-mod groq;
+mod config;
 
-use std::{io, time::Duration};
-use crossterm::{
-    event::{self, Event, KeyCode},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::{
-    backend::CrosstermBackend,
-    layout::{Layout, Direction, Constraint},
-    widgets::{Block, Borders, Paragraph},
-    Terminal,
-};
-use dotenvy::dotenv;
-use std::env;
+use config::BotConfig;
+use reqwest::Client;
+use serde_json::json;
+use std::io::{self, Write};
+use futures_util::StreamExt;
 
 #[tokio::main]
-async fn main() -> Result<(), io::Error> {
-    dotenv().ok();
-    let api_key = env::var("GROQ_API_KEY").expect("GROQ_API_KEY not set");
+async fn main() {
+    let mut config = BotConfig::load_or_create();
+    let client = Client::new();
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut input = String::new();
-    let mut messages: Vec<String> = vec![];
+    println!("\n══════════════════════════════════════");
+    println!("🤖 {} is online", config.ai_name);
+    println!("Type 'help' for commands");
+    println!("══════════════════════════════════════\n");
 
     loop {
-        terminal.draw(|f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(1),
-                    Constraint::Length(3),
-                ])
-                .split(f.size());
+        print!("🧑 You > ");
+        io::stdout().flush().unwrap();
 
-            let chat = Paragraph::new(messages.join("\n\n"))
-                .block(Block::default().borders(Borders::ALL).title("Groq AI Chat"));
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        let input = input.trim();
 
-            let input_box = Paragraph::new(input.as_str())
-                .block(Block::default().borders(Borders::ALL).title("You"));
+        if input.is_empty() {
+            continue;
+        }
 
-            f.render_widget(chat, chunks[0]);
-            f.render_widget(input_box, chunks[1]);
-        })?;
+        if input == "exit" || input == "quit" {
+            println!("👋 Goodbye!");
+            break;
+        }
 
-        if event::poll(Duration::from_millis(200))? {
-            if let Event::Key(key) = event::read()? {
-                match key.code {
-                    KeyCode::Char(c) => input.push(c),
-                    KeyCode::Backspace => { input.pop(); }
-                    KeyCode::Enter => {
-                        let user_msg = input.clone();
-                        messages.push(format!("🧑 You: {}", user_msg));
+        if input == "help" {
+            show_help();
+            continue;
+        }
 
-                        input.clear();
+        if input == "clear" {
+            print!("\x1B[2J\x1B[1;1H");
+            continue;
+        }
 
-                        let reply = match groq::ask_groq(&user_msg, &api_key).await {
-    Ok(r) => r,
-    Err(e) => format!("Groq error: {}", e),
-};
+        if input.starts_with("set name ") {
+            let name = input.replace("set name ", "");
+            config.ai_name = name.clone();
+            config.save();
+            println!("✅ AI renamed to {}", name);
+            continue;
+        }
 
-                        messages.push(format!("🤖 AI: {}", reply));
+        if input == "debug on" {
+            config.debug = true;
+            config.save();
+            println!("🐞 Debug ON");
+            continue;
+        }
+
+        if input == "debug off" {
+            config.debug = false;
+            config.save();
+            println!("🐞 Debug OFF");
+            continue;
+        }
+
+        print!("🤖 {}: ", config.ai_name);
+        io::stdout().flush().unwrap();
+
+        if let Err(e) = stream_groq_response(&client, &config, input).await {
+            println!("\n❌ Error: {}", e);
+        }
+
+        println!();
+    }
+}
+
+async fn stream_groq_response(
+    client: &Client,
+    config: &BotConfig,
+    prompt: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let res = client
+        .post("https://api.groq.com/openai/v1/chat/completions")
+        .bearer_auth(&config.api_key)
+        .json(&json!({
+            "model": "llama-3.1-8b-instant",
+            "stream": true,
+            "messages": [
+                { "role": "system", "content": "You are a helpful AI assistant." },
+                { "role": "user", "content": prompt }
+            ]
+        }))
+        .send()
+        .await?;
+
+    let mut stream = res.bytes_stream();
+
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?; // ✅ FIX
+        let text = String::from_utf8_lossy(&chunk);
+
+        for line in text.lines() {
+            if line.starts_with("data: ") {
+                let data = &line[6..];
+                if data == "[DONE]" {
+                    return Ok(());
+                }
+
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(data) {
+                    if let Some(token) =
+                        json["choices"][0]["delta"]["content"].as_str()
+                    {
+                        print!("{}", token);
+                        io::stdout().flush().unwrap();
                     }
-                    KeyCode::Esc => break,
-                    _ => {}
                 }
             }
         }
     }
 
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-
     Ok(())
 }
 
+fn show_help() {
+    println!();
+    println!("Commands:");
+    println!(" help        → Show this menu");
+    println!(" exit / quit → Exit BotR");
+    println!(" clear       → Clear screen");
+    println!(" set name X  → Rename AI");
+    println!(" debug on    → Enable debug");
+    println!(" debug off   → Disable debug");
+    println!();
+}
